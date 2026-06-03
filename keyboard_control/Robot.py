@@ -1,6 +1,6 @@
 import numpy as np
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from isaacsim.core.prims import SingleArticulation
 from isaacsim.core.prims import RigidPrim
@@ -8,7 +8,7 @@ from isaacsim.core.utils.types import ArticulationAction
 
 from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
 
-class Robot():
+class Robot:
     ROBOT_PATH = "/World/ur5_rg2/ur5"
     EE_PATH = "/World/ur5_rg2/ur5/wrist_3_link" 
     EE_NAME = "wrist_3_link"
@@ -31,8 +31,11 @@ class Robot():
         
         self.ee = RigidPrim(prim_paths_expr=self.EE_PATH, name="ee_view")
         
-        # 将 target 初始化为 None，而不是类型提示对象
-        self.ee_target = None
+        self.ee_target: Optional[Tuple[np.ndarray, np.ndarray]] = None
+        self.joints_index: Optional[np.ndarray] = None
+        self.ee_index: Optional[int] = None
+        self.gripper_target = 0.0
+        self._initialized = False
 
         ur5_urdf_path = self.ASSETS_PATH / "ur5.urdf"
         ur5_yaml_path = self.ASSETS_PATH / "ur5_robot_description.yaml"
@@ -47,7 +50,7 @@ class Robot():
             end_effector_frame_name=self.EE_NAME
         )
 
-    def set_original_joints(self):
+    def initialize(self):
         self.robot.initialize()
         # DOF 索引必须在 articulation 初始化后查询。
         self.joints_index = np.array(
@@ -57,9 +60,15 @@ class Robot():
         self.ee_index = self.robot.get_dof_index(self.GRIPPER_JOINT_NAME)
         
         self.robot.set_joint_positions(self.original_joints_val, joint_indices=self.joints_index)
+        self._initialized = True
         self.set_gripper_angle(0.0)
 
+    def set_original_joints(self):
+        """Backward-compatible name for the robot initialization step."""
+        self.initialize()
+
     def set_ee_pose(self, target: Tuple[np.ndarray, np.ndarray]):
+        self._ensure_initialized()
         target_pos, target_quat = target
         raw_output, success = self.kinematics_solver.compute_inverse_kinematics(
             target_position=target_pos,
@@ -85,6 +94,7 @@ class Robot():
             return False
 
     def set_gripper_angle(self, angle: float):
+        self._ensure_initialized()
         self.gripper_target = np.clip(angle, self.GRIPPER_MIN_ANGLE, self.GRIPPER_MAX_ANGLE)
         action = ArticulationAction(
             joint_positions=np.array([self.gripper_target]),
@@ -110,8 +120,13 @@ class Robot():
         return None
     
     def get_gripper_angle(self):
+        self._ensure_initialized()
         current_joints = self.get_joint_positions()
         if current_joints is not None:
             return float(current_joints[self.ee_index])
         return 0.0
+
+    def _ensure_initialized(self) -> None:
+        if not self._initialized or self.joints_index is None or self.ee_index is None:
+            raise RuntimeError("Call Robot.initialize() after World.reset() before commanding the robot.")
     

@@ -1,5 +1,8 @@
 import threading
-from typing import Optional
+from collections import deque
+from dataclasses import dataclass
+from enum import Enum
+from typing import Deque, Optional
 
 import numpy as np
 
@@ -13,11 +16,27 @@ except ImportError:
     from RG2FTSensors import RG2FTSensors
 from scipy.spatial.transform import Rotation as R
 
+
+class KeyboardCommand(Enum):
+    TELEMETRY = "g"
+    START_GRASP = "c"
+    RELEASE = "v"
+    RESET_FAULT = "b"
+    ZERO_FORCE_BIAS = "n"
+
+
+@dataclass(frozen=True)
+class TeleopScale:
+    pos: float = 0.005
+    rpy: float = 0.02
+    gripper: float = 0.05
+
+
 class KeyboardInputDevice:
     """键盘遥控设备：负责监听按键并通过逆解控制机器人。"""
 
     ARM_KEYS = ("w", "s", "a", "d", "q", "e", "i", "k", "j", "l", "u", "o")
-    COMMAND_KEYS = ("g", "c", "v", "b", "n")
+    COMMAND_BY_KEY = {command.value: command for command in KeyboardCommand}
     REFERENCE_FPS = 60.0
 
     def __init__(
@@ -34,20 +53,14 @@ class KeyboardInputDevice:
         self.force_controller = force_controller
         
         # Scale 表示 60 FPS 下每帧的增量，update() 会按实际 dt 做归一化。
-        self.pos_scale = pos_scale
-        self.rpy_scale = rpy_scale
-        self.gripper_scale = gripper_scale
+        self.scale = TeleopScale(pos=pos_scale, rpy=rpy_scale, gripper=gripper_scale)
 
         self.state = {
             "w": False, "s": False, "a": False, "d": False, "q": False, "e": False, # 位置
             "i": False, "k": False, "j": False, "l": False, "u": False, "o": False, # 姿态
             "z": False, "x": False,                                                 # 夹爪
         }
-        self.telemetry_requested = False
-        self.grasp_requested = False
-        self.release_requested = False
-        self.fault_reset_requested = False
-        self.zero_force_bias_requested = False
+        self._command_queue: Deque[KeyboardCommand] = deque()
 
         self.listener = None
         self.listener_thread = None
@@ -90,18 +103,9 @@ class KeyboardInputDevice:
             k = key.char.lower()
             if k in self.state:
                 self.state[k] = True
-            elif k in self.COMMAND_KEYS and k not in self._pressed_command_keys:
+            elif k in self.COMMAND_BY_KEY and k not in self._pressed_command_keys:
                 self._pressed_command_keys.add(k)
-                if k == "g":
-                    self.telemetry_requested = True
-                elif k == "c":
-                    self.grasp_requested = True
-                elif k == "v":
-                    self.release_requested = True
-                elif k == "b":
-                    self.fault_reset_requested = True
-                elif k == "n":
-                    self.zero_force_bias_requested = True
+                self._command_queue.append(self.COMMAND_BY_KEY[k])
         except AttributeError:
             pass
 
@@ -126,16 +130,7 @@ class KeyboardInputDevice:
         if not self.connected:
             return
 
-        self._process_force_control_requests()
-
-        if self.telemetry_requested:
-            self.telemetry_requested = False
-            if self.sensors is None:
-                print("RG2-FT sensors are not configured.")
-            else:
-                print(self.sensors.format_data(self.sensors.read()))
-            if self.force_controller is not None:
-                print(self.force_controller.format_status())
+        self._process_command_queue()
 
         # 检查是否有按键被按下，如果没有则跳过计算，节省算力
         if not any(self.state.values()):
@@ -150,41 +145,8 @@ class KeyboardInputDevice:
             
             target_pos, target_quat_wxyz = target
             
-            # 1. 位置控制 (XYZ)
-            delta_pos = np.zeros(3)
-            if self.state["w"]: delta_pos[0] += self.pos_scale
-            if self.state["s"]: delta_pos[0] -= self.pos_scale
-            if self.state["a"]: delta_pos[1] += self.pos_scale
-            if self.state["d"]: delta_pos[1] -= self.pos_scale
-            if self.state["q"]: delta_pos[2] += self.pos_scale
-            if self.state["e"]: delta_pos[2] -= self.pos_scale
-            
-            target_pos += delta_pos * frame_scale
-
-            # 2. 姿态控制 (RPY)
-            delta_rpy = np.zeros(3)
-            if self.state["j"]: delta_rpy[0] -= self.rpy_scale
-            if self.state["l"]: delta_rpy[0] += self.rpy_scale
-            if self.state["i"]: delta_rpy[1] += self.rpy_scale
-            if self.state["k"]: delta_rpy[1] -= self.rpy_scale
-            if self.state["u"]: delta_rpy[2] += self.rpy_scale
-            if self.state["o"]: delta_rpy[2] -= self.rpy_scale
-
-            # 如果发生姿态改变
-            if np.any(delta_rpy != 0):
-                # 获取增量旋转
-                r_delta = R.from_euler('xyz', delta_rpy * frame_scale)
-                
-                # Scipy 必须使用 XYZW 顺序，而 Isaac Sim 是 WXYZ
-                curr_quat_xyzw = np.array([target_quat_wxyz[1], target_quat_wxyz[2], target_quat_wxyz[3], target_quat_wxyz[0]])
-                r_curr = R.from_quat(curr_quat_xyzw)
-                
-                # 旋转叠加 (在全局坐标系下应用增量)
-                r_new = r_delta * r_curr 
-                
-                # 转换回 WXYZ 顺序
-                new_quat_xyzw = r_new.as_quat()
-                target_quat_wxyz = np.array([new_quat_xyzw[3], new_quat_xyzw[0], new_quat_xyzw[1], new_quat_xyzw[2]])
+            target_pos = target_pos + self._position_delta() * frame_scale
+            target_quat_wxyz = self._apply_rotation_delta(target_quat_wxyz, frame_scale)
 
             # 发送底层 IK 请求
             self.robot.set_ee_pose((target_pos, target_quat_wxyz))
@@ -193,38 +155,79 @@ class KeyboardInputDevice:
         if self.force_controller is not None and not self.force_controller.manual_control_allowed:
             return
 
-        current_gripper_angle = self.robot.gripper_target
+        current_gripper_angle = self.robot.get_gripper_target()
         if self.state["z"] and not self.state["x"]:
-            current_gripper_angle += self.gripper_scale * frame_scale
+            current_gripper_angle += self.scale.gripper * frame_scale
             self.robot.set_gripper_angle(current_gripper_angle)
         elif self.state["x"] and not self.state["z"]:
-            current_gripper_angle -= self.gripper_scale * frame_scale
+            current_gripper_angle -= self.scale.gripper * frame_scale
             self.robot.set_gripper_angle(current_gripper_angle)
 
-    def _process_force_control_requests(self):
-        if self.force_controller is None:
-            if any((
-                self.grasp_requested,
-                self.release_requested,
-                self.fault_reset_requested,
-                self.zero_force_bias_requested,
-            )):
-                print("RG2-FT force controller is not configured.")
-            self.grasp_requested = False
-            self.release_requested = False
-            self.fault_reset_requested = False
-            self.zero_force_bias_requested = False
+    def _position_delta(self) -> np.ndarray:
+        delta_pos = np.zeros(3)
+        if self.state["w"]: delta_pos[0] += self.scale.pos
+        if self.state["s"]: delta_pos[0] -= self.scale.pos
+        if self.state["a"]: delta_pos[1] += self.scale.pos
+        if self.state["d"]: delta_pos[1] -= self.scale.pos
+        if self.state["q"]: delta_pos[2] += self.scale.pos
+        if self.state["e"]: delta_pos[2] -= self.scale.pos
+        return delta_pos
+
+    def _rotation_delta(self) -> np.ndarray:
+        delta_rpy = np.zeros(3)
+        if self.state["j"]: delta_rpy[0] -= self.scale.rpy
+        if self.state["l"]: delta_rpy[0] += self.scale.rpy
+        if self.state["i"]: delta_rpy[1] += self.scale.rpy
+        if self.state["k"]: delta_rpy[1] -= self.scale.rpy
+        if self.state["u"]: delta_rpy[2] += self.scale.rpy
+        if self.state["o"]: delta_rpy[2] -= self.scale.rpy
+        return delta_rpy
+
+    def _apply_rotation_delta(self, target_quat_wxyz: np.ndarray, frame_scale: float) -> np.ndarray:
+        delta_rpy = self._rotation_delta()
+        if not np.any(delta_rpy != 0):
+            return target_quat_wxyz
+
+        r_delta = R.from_euler("xyz", delta_rpy * frame_scale)
+        r_curr = R.from_quat(self._wxyz_to_xyzw(target_quat_wxyz))
+        r_new = r_delta * r_curr
+        return self._xyzw_to_wxyz(r_new.as_quat())
+
+    @staticmethod
+    def _wxyz_to_xyzw(quat_wxyz: np.ndarray) -> np.ndarray:
+        return np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
+
+    @staticmethod
+    def _xyzw_to_wxyz(quat_xyzw: np.ndarray) -> np.ndarray:
+        return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
+
+    def _process_command_queue(self):
+        while self._command_queue:
+            command = self._command_queue.popleft()
+            self._process_command(command)
+
+    def _process_command(self, command: KeyboardCommand):
+        if command is KeyboardCommand.TELEMETRY:
+            self._print_telemetry()
             return
 
-        if self.grasp_requested:
-            self.grasp_requested = False
+        if self.force_controller is None:
+            print("RG2-FT force controller is not configured.")
+            return
+
+        if command is KeyboardCommand.START_GRASP:
             self.force_controller.start_grasp()
-        if self.release_requested:
-            self.release_requested = False
+        elif command is KeyboardCommand.RELEASE:
             self.force_controller.release()
-        if self.fault_reset_requested:
-            self.fault_reset_requested = False
+        elif command is KeyboardCommand.RESET_FAULT:
             self.force_controller.reset_fault()
-        if self.zero_force_bias_requested:
-            self.zero_force_bias_requested = False
+        elif command is KeyboardCommand.ZERO_FORCE_BIAS:
             self.force_controller.zero_force_bias()
+
+    def _print_telemetry(self):
+        if self.sensors is None:
+            print("RG2-FT sensors are not configured.")
+        else:
+            print(self.sensors.format_data(self.sensors.read()))
+        if self.force_controller is not None:
+            print(self.force_controller.format_status())

@@ -20,27 +20,30 @@ from RG2FTSensors import RG2FTSensors
 
 USD_PATH = os.environ.get("RG2_SCENE_USD", "/home/guan/Desktop/ur5_rg2/my_scene/pick.usd")
 
-keyboard_device = None
-try:
+
+def create_world():
     open_stage(usd_path=USD_PATH)
 
     # 创建仿真世界并启用 deformable body 所需的 GPU PhysX 配置
-    my_world = World(stage_units_in_meters=1.0)
-    physics_context = my_world.get_physics_context()
+    world = World(stage_units_in_meters=1.0)
+    physics_context = world.get_physics_context()
     physics_context.enable_gpu_dynamics(True)
     physics_context.set_broadphase_type("GPU")
 
     print("GPU dynamics before reset:", physics_context.is_gpu_dynamics_enabled())
     print("Broadphase before reset:", physics_context.get_broadphase_type())
 
-    my_world.reset()
+    world.reset()
 
     print("GPU dynamics after reset:", physics_context.is_gpu_dynamics_enabled())
     print("Broadphase after reset:", physics_context.get_broadphase_type())
+    return world
 
+
+def create_control_stack():
     # 实例化机器人并复位
     ur5_robot = Robot()
-    ur5_robot.set_original_joints()
+    ur5_robot.initialize()
     sensors = RG2FTSensors(articulation=ur5_robot.robot)
     sensors.initialize()
     force_config = GripperForceConfig(
@@ -68,15 +71,27 @@ try:
     keyboard_device.connect()
 
     print("✨ 完整场景加载成功，物理句柄挂载完毕，开始仿真...")
+    return keyboard_device, force_controller
 
+
+def run_simulation(world, keyboard_device, force_controller):
     # 仿真主循环
     while simulation_app.is_running():
+        physics_dt = world.get_physics_dt()
+
         # 读取键盘指令并下发 IK 指令
-        keyboard_device.update(dt=my_world.get_physics_dt())
-        force_controller.update(dt=my_world.get_physics_dt())
+        keyboard_device.update(dt=physics_dt)
+        force_controller.update(dt=physics_dt)
         
         # 步进物理环境
-        my_world.step(render=True)
+        world.step(render=True)
+
+
+keyboard_device = None
+try:
+    my_world = create_world()
+    keyboard_device, force_controller = create_control_stack()
+    run_simulation(my_world, keyboard_device, force_controller)
 except KeyboardInterrupt:
     print("用户强制终止。")
 finally:
