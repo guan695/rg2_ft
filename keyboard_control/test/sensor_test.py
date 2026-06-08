@@ -10,10 +10,13 @@ from isaacsim.core.api import World
 from isaacsim.core.utils.stage import open_stage
 
 from keyboard_control.Robot import Robot
+from keyboard_control.RobotConfig import DEFAULT_ROBOT_MODEL, get_robot_config
 from keyboard_control.RG2FTSensors import RG2FTSensors
 
 
-USD_PATH = os.environ.get("RG2_SCENE_USD", "/home/guan/Desktop/ur5_rg2/my_scene/pick.usd")
+ROBOT_MODEL = os.environ.get("RG2_ROBOT_MODEL", DEFAULT_ROBOT_MODEL)
+ROBOT_CONFIG = get_robot_config(ROBOT_MODEL)
+USD_PATH = os.environ.get("RG2_SCENE_USD", ROBOT_CONFIG.scene_usd_path)
 PRINT_INTERVAL_FRAMES = 60
 
 
@@ -23,10 +26,14 @@ def main() -> None:
     world = World(stage_units_in_meters=1.0)
     world.reset()
 
-    robot = Robot()
+    robot = Robot(config=ROBOT_CONFIG)
     robot.set_original_joints()
 
-    sensors = RG2FTSensors(articulation=robot.robot)
+    sensors = RG2FTSensors(
+        articulation=robot.robot,
+        left_lidar_path=ROBOT_CONFIG.left_lidar_path,
+        right_lidar_path=ROBOT_CONFIG.right_lidar_path,
+    )
     try:
         sensors.initialize()
     except Exception:

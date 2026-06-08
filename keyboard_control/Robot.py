@@ -1,5 +1,4 @@
 import numpy as np
-from pathlib import Path
 from typing import Optional, Tuple
 
 from isaacsim.core.prims import SingleArticulation
@@ -8,11 +7,13 @@ from isaacsim.core.utils.types import ArticulationAction
 
 from omni.isaac.motion_generation import ArticulationKinematicsSolver, LulaKinematicsSolver
 
+try:
+    from .RobotConfig import DEFAULT_ROBOT_MODEL, RobotModelConfig, get_robot_config
+except ImportError:
+    from RobotConfig import DEFAULT_ROBOT_MODEL, RobotModelConfig, get_robot_config
+
+
 class Robot:
-    ROBOT_PATH = "/World/ur5_rg2/ur5"
-    EE_PATH = "/World/ur5_rg2/ur5/wrist_3_link" 
-    EE_NAME = "wrist_3_link"
-    ASSETS_PATH = Path(__file__).resolve().parents[1] / "assets"
     ARM_JOINT_NAMES = (
         "shoulder_pan_joint",
         "shoulder_lift_joint",
@@ -25,11 +26,19 @@ class Robot:
     GRIPPER_MIN_ANGLE = np.deg2rad(-2.1)
     GRIPPER_MAX_ANGLE = np.deg2rad(66.3)
 
-    def __init__(self):
-        self.robot = SingleArticulation(prim_path=self.ROBOT_PATH, name="ur5_view")
+    def __init__(
+        self,
+        model: str = DEFAULT_ROBOT_MODEL,
+        config: Optional[RobotModelConfig] = None,
+    ):
+        self.config = config or get_robot_config(model)
+        self.robot = SingleArticulation(
+            prim_path=self.config.robot_path,
+            name=self.config.articulation_name,
+        )
         self.original_joints_val = np.array([0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0], dtype=np.float64)
         
-        self.ee = RigidPrim(prim_paths_expr=self.EE_PATH, name="ee_view")
+        self.ee = RigidPrim(prim_paths_expr=self.config.ee_path, name="ee_view")
         
         self.ee_target: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self.joints_index: Optional[np.ndarray] = None
@@ -37,17 +46,14 @@ class Robot:
         self.gripper_target = 0.0
         self._initialized = False
 
-        ur5_urdf_path = self.ASSETS_PATH / "ur5.urdf"
-        ur5_yaml_path = self.ASSETS_PATH / "ur5_robot_description.yaml"
-
         base_lula_solver = LulaKinematicsSolver(
-            robot_description_path=str(ur5_yaml_path),
-            urdf_path=str(ur5_urdf_path)
+            robot_description_path=str(self.config.robot_description_path),
+            urdf_path=str(self.config.urdf_path)
         )
         self.kinematics_solver = ArticulationKinematicsSolver(
             robot_articulation=self.robot, 
             kinematics_solver=base_lula_solver,
-            end_effector_frame_name=self.EE_NAME
+            end_effector_frame_name=self.config.ee_name
         )
 
     def initialize(self):

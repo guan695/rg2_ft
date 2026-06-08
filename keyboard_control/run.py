@@ -13,15 +13,22 @@ from isaacsim.core.api import World
 from isaacsim.core.utils.stage import open_stage
 
 from Robot import Robot
+from RobotConfig import DEFAULT_ROBOT_MODEL, get_robot_config
 from KeyboardInputDevice import KeyboardInputDevice
 from GripperForceController import GripperForceConfig, GripperForceController
 from RG2FTSensors import RG2FTSensors
 
 
-USD_PATH = os.environ.get("RG2_SCENE_USD", "/home/guan/Desktop/ur5_rg2/my_scene/pick.usd")
+# Change this to "ur5" or "ur5e" to switch the robot model.
+ROBOT_MODEL = DEFAULT_ROBOT_MODEL
+ROBOT_MODEL = os.environ.get("RG2_ROBOT_MODEL", ROBOT_MODEL)
+ROBOT_CONFIG = get_robot_config(ROBOT_MODEL)
+USD_PATH = os.environ.get("RG2_SCENE_USD", ROBOT_CONFIG.scene_usd_path)
 
 
 def create_world():
+    print(f"Robot model: {ROBOT_CONFIG.model}")
+    print(f"Scene: {USD_PATH}")
     open_stage(usd_path=USD_PATH)
 
     # 创建仿真世界并启用 deformable body 所需的 GPU PhysX 配置
@@ -42,26 +49,30 @@ def create_world():
 
 def create_control_stack():
     # 实例化机器人并复位
-    ur5_robot = Robot()
-    ur5_robot.initialize()
-    sensors = RG2FTSensors(articulation=ur5_robot.robot)
+    robot = Robot(config=ROBOT_CONFIG)
+    robot.initialize()
+    sensors = RG2FTSensors(
+        articulation=robot.robot,
+        left_lidar_path=ROBOT_CONFIG.left_lidar_path,
+        right_lidar_path=ROBOT_CONFIG.right_lidar_path,
+    )
     sensors.initialize()
     force_config = GripperForceConfig(
         target_force_n=4.0,
     )
     force_controller = GripperForceController(
-        robot=ur5_robot,
+        robot=robot,
         sensors=sensors,
         config=force_config,
     )
 
-    ee_pos, ee_ori = ur5_robot.get_ee_pose()
+    ee_pos, ee_ori = robot.get_ee_pose()
     print(f"Initial End Effector Position: {ee_pos}")
     print(f"Initial End Effector Orientation: {ee_ori}")
 
     # 实例化键盘控制器并连接
     keyboard_device = KeyboardInputDevice(
-        robot=ur5_robot,
+        robot=robot,
         sensors=sensors,
         force_controller=force_controller,
         pos_scale=0.002,

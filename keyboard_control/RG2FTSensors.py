@@ -1,8 +1,13 @@
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from isaacsim.core.prims import SingleArticulation
 from isaacsim.sensors.physx import _range_sensor
+
+try:
+    from .RobotConfig import DEFAULT_ROBOT_MODEL, get_robot_config
+except ImportError:
+    from RobotConfig import DEFAULT_ROBOT_MODEL, get_robot_config
 
 
 class RG2FTSensors:
@@ -10,24 +15,24 @@ class RG2FTSensors:
 
     DEFAULT_LEFT_JOINT = "l_tip"
     DEFAULT_RIGHT_JOINT = "r_tip"
-    DEFAULT_LEFT_LIDAR_PATH = "/World/ur5_rg2/rg2_ft_tip/l_finger_tip/Lidar"
-    DEFAULT_RIGHT_LIDAR_PATH = "/World/ur5_rg2/rg2_ft_tip/r_finger_tip/Lidar"
 
     def __init__(
         self,
         articulation: SingleArticulation,
         left_joint_name: str = DEFAULT_LEFT_JOINT,
         right_joint_name: str = DEFAULT_RIGHT_JOINT,
-        left_lidar_path: str = DEFAULT_LEFT_LIDAR_PATH,
-        right_lidar_path: str = DEFAULT_RIGHT_LIDAR_PATH,
+        left_lidar_path: Optional[str] = None,
+        right_lidar_path: Optional[str] = None,
+        model: str = DEFAULT_ROBOT_MODEL,
         max_distance_mm: float = 100.0,
         distance_offset_mm: float = 1.0,
     ) -> None:
+        config = get_robot_config(model)
         self.articulation = articulation
         self.left_joint_name = left_joint_name
         self.right_joint_name = right_joint_name
-        self.left_lidar_path = left_lidar_path
-        self.right_lidar_path = right_lidar_path
+        self.left_lidar_path = left_lidar_path or config.left_lidar_path
+        self.right_lidar_path = right_lidar_path or config.right_lidar_path
         self.max_distance_mm = max_distance_mm
         self.distance_offset_mm = distance_offset_mm
 
